@@ -7,5 +7,5 @@ DFS - Outline
 
 FanDuel
   * Full object-oriented rework of concept. 
-  * Game is an object that holds files, generated rosters, and selections for easier reproducibility and analysis in the future.
+  * Game is an object that holds files, strategies, generated rosters, and selections for easier reproducibility and analysis in the future.
   * NBA will soon be added to available sports.
