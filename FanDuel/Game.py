@@ -12,6 +12,7 @@ import os
 from itertools import chain, combinations
 from datetime import datetime
 
+
 class Game:
     """
     Object to hold and process all data and attributes for a FanDuel game. 
@@ -71,7 +72,8 @@ class Game:
             self.data = pl_m.merge(
                 self.summarizeActuals(), how = 'left', left_on = 'Nickname', right_on = 'Nickname')
             # initialize rosters
-            self.rosters = pd.DataFrame(columns=['Salary', 'Projected', 'STD', 'K'])
+            self.rosters = pd.DataFrame(
+                columns=['Salary', 'Projected', 'Hist_Avg', 'Hist_Std', 'Proj_Percent', 'K'])
             
             # initialize tracking dict
             self.tracking = {}
@@ -94,20 +96,26 @@ class Game:
             self.data = self.data.merge(
                 self.actuals[['Nickname', 'FPTS']],
                 how = 'left', left_on = 'Nickname', right_on='Nickname')
+            # rename 'FPTS' to 'Actual'
+            self.data.columns = ['Actual' if i=='FPTS' else i for i in self.data.columns]
+            
             # merge actual roster points to rosters dataframe
             rosters = self.data[
                 self.data.columns[list(self.data.columns).index('Roster0') : -1]
                 ].replace(-1, 0)
             points = self.data[self.data.columns[-1]]
             r_points = rosters.multiply(points.fillna(0), axis='rows').sum(axis='rows')
-            self.rosters['Actual'] = r_points
+            try: # TODO clean up try/except
+                self.rosters['Actual'] = r_points
+            except:
+                print('Rosters not found for actual merge.')
             
             # initialize tracking dict
             self.tracking = {}
         
         
-    
     # getters and setters -----------------------------------------------------
+    
     def getDefaultNameMapping(self):
         """
         Mapping of Fantasy Pros' player names to FanDuel names.
@@ -125,6 +133,7 @@ class Game:
                      'Stanley Morgan Jr.': 'Stanley Morgan'}
         else:
             raise NotImplementedError('Default name mapping not implemented.')
+    
     
     # FILE FUNCTIONS ----------------------------------------------------------
     
@@ -186,8 +195,9 @@ class Game:
         # load each sheet in actuals
         dat = []
         for pos in positions:
-            temp = pd.read_excel(folder + self._historical, sheet_name=pos)
-            dat.append(temp[['Player', 'FPTS', 'Season', 'WeekNum', 'G']])
+            temp = pd.read_excel(folder + self._historical, sheet_name=pos,
+                                 converters={'ROST' : lambda x: float(x[:-1])})
+            dat.append(temp[['Player', 'FPTS', 'Season', 'WeekNum', 'G', 'ROST']])
             
         # concatenate data into one dataframe and filter to G>0
         df = pd.concat(dat)
@@ -219,19 +229,19 @@ class Game:
         """
         # summarize historical stats and merge with players list to create data
         act = self.historical.copy().sort_values('Period', ascending=False)[
-            ['Nickname', 'Period', 'Season', 'WeekNum', 'G', 'FPTS', 'FPTS']]
+            ['Nickname', 'Period', 'Season', 'WeekNum', 'G', 'FPTS', 'FPTS', 'ROST']]
         
         # grab n most recent games
         top = act.groupby('Nickname').head(self._n_historical)
         
         # prep columns, aggregate, and clean up
         top.columns = ['Nickname', 'MR_Period', 'MR_Season', 'MR_WeekNum',
-                       'N_Games', 'Actual_AVG', 'Actual_STD']
+                       'N_Games', 'Hist_Avg', 'Hist_Std', 'Proj_Percent']
         agg = top.groupby('Nickname').aggregate(
             {'MR_Period':'first', 'MR_Season':'first', 'MR_WeekNum':'first',
-             'N_Games':'sum', 'Actual_AVG':'mean', 'Actual_STD':'std'})
-        agg['Actual_AVG'] = round(agg['Actual_AVG'], 2)
-        agg['Actual_STD'] = round(agg['Actual_STD'], 2)
+             'N_Games':'sum', 'Hist_Avg':'mean', 'Hist_Std':'std', 'Proj_Percent':'first'})
+        agg['Hist_Avg'] = round(agg['Hist_Avg'], 2)
+        agg['Hist_Std'] = round(agg['Hist_Std'], 2)
         return agg
     
     
@@ -297,13 +307,17 @@ class Game:
             self._name_mapping[e] = meta_v[i]
         
         # load roster summaries
-        self.rosters = pd.read_excel(full_file_name + '.xlsx',
-                                     sheet_name = 'rosters',
-                                     index_col = 0)
+        try: # TODO clean up try/except
+            self.rosters = pd.read_excel(full_file_name + '.xlsx',
+                                         sheet_name = 'rosters',
+                                         index_col = 0)
+        except:
+            print('Unable to load rosters.')
+        
         return True
     
     
-    def export_game(self, file_name=None):
+    def export_game(self, file_name=None, override=False):
         """
         Export meta, data, and roster data to Excel file and Pickle file.
         """
@@ -377,14 +391,19 @@ class Game:
                             columns=['Values'])
         
         # check if file already exists        
-        if os.path.exists(save_folder + file_name) or \
-            os.path.exists(save_folder + file_name + '.xlsx'):
+        if (not override) and \
+            (os.path.exists(save_folder + file_name) or \
+            os.path.exists(save_folder + file_name + '.xlsx')):
             print(f'"{save_folder}{file_name}" already exists!')
             return False
         else:
-            # truncate actuals
-            data = self.data[self.data.columns[:-1]]
-            rosters = self.rosters[self.rosters.columns[:-1]]
+            data = self.data
+            rosters = self.rosters
+            
+            # truncate actuals if they exist
+            if 'Actual' in data.columns:
+                data = data[data.columns[:-1]]
+                rosters = rosters[rosters.columns[:-1]]
             # save meta, data, and rosters to Excel
             with pd.ExcelWriter(save_folder + file_name + '.xlsx') as writer:
                 meta.to_excel(writer, sheet_name = 'meta')
@@ -407,7 +426,8 @@ class Game:
         
         # remove roster data
         self.data = dat[dat.columns[: list(dat.columns).index('Roster0')]]
-        self.rosters = pd.DataFrame(columns=['Salary', 'Projected', 'STD', 'K'])
+        self.rosters = pd.DataFrame(
+            columns=['Salary', 'Projected', 'Hist_Avg', 'Hist_Std', 'Proj_Percent', 'K'])
         return True
     
     
@@ -422,7 +442,7 @@ class Game:
         return power_s[1:]
     
     
-    def _defineProblem(self, dat, point_col='FPPG', drop_players=[],
+    def _defineProblem(self, dat, point_col='Projected', drop_players=[],
                        variance_type=None, variance_target=None):
             """
             Breaks dat into components for integer programming problem.
@@ -499,108 +519,6 @@ class Game:
         self.data = pd.concat([self.data, roster], axis = 'columns')
                               
         return pulp.LpStatus[problem.status]
-
-    # todo destroy this shit
-    def test_strategy_iterative(self, point_col, visual=True):
-        """
-        Finds a neighborhood of optimal solutions by dropping players in
-        optimal roster, secondary, and tertiary rosters for a total of
-        three iterations. 
-        
-        Appends to self.data.
-
-        Returns: number of optimal solutions,
-                 number of rosters        
-        """
-        ROSTERS = []
-        start = datetime.now()
-        total_optimal = 0
-        total_rosters = 0
-        
-        # initial problem
-        result = self._solveProblem(point_col)
-        init_sol_players = list(self.data[self.data['Roster0']==1]['Nickname'])
-        if result[0] != 'Optimal':
-            raise ValueError("Strategy Iterative's initial solution is not optimal!")
-        total_optimal += 1
-        total_rosters += 1
-        
-        # use initial solution to create powerset and iterate
-        pset = self._powerset(init_sol_players)
-        
-        counter = 1
-        # initial iteration
-        optimal = 0
-        rosters = 0
-        for s in pset:
-            result = self.test_solveProblem(point_col, f'Roster{counter}', s)
-            if result[0] == 'Optimal':
-                optimal += 1
-            rosters += 1
-            counter += 1
-            
-        total_optimal += optimal
-        total_rosters += rosters
-        
-        if visual:
-            stop = datetime.now()
-            print(f'\nInitial iteration completed in {stop - start}.')
-            print(f'Optimal solutions: {optimal} / {rosters}')
-            
-        # second iteration
-        start_roster = self.data.columns[-1]
-        print('\nStarting second iteration...')
-        
-        secondary_solution = list(self.data[self.data[start_roster]==1]['Nickname'])
-        pset = self._powerset(secondary_solution)
-        
-        optimal = 0
-        rosters = 0
-        for s in pset:
-            # drop initial solution and subset
-            result = self.test_solveProblem(point_col, f'Roster{counter}',
-                                        init_sol_players + list(s))
-            if result[0] == 'Optimal':
-                optimal += 1
-            rosters += 1
-            counter += 1
-        
-        total_optimal += optimal
-        total_rosters += rosters
-        
-        if visual:
-            print(f'\nSecond iteration completed in {datetime.now() - stop}.')
-            stop = datetime.now()
-            print(f'Optimal solutions: {optimal} / {rosters}')
-            
-        # third iteration
-        start_roster = self.data.columns[-1]
-        print('\nStarting third iteration...')
-        
-        tertiary_solution = list(self.data[self.data[start_roster]==1]['Nickname'])
-        pset = self._powerset(tertiary_solution)
-        
-        optimal = 0
-        rosters = 0
-        for s in pset:
-            # drop initial solution, secondary solution, and subset
-            result = self.test_solveProblem(point_col, f'Roster{counter}',
-                                        init_sol_players + secondary_solution + list(s))
-            if result[0] == 'Optimal':
-                optimal += 1
-            rosters += 1
-            counter += 1
-        
-        total_optimal += optimal
-        total_rosters += rosters
-        
-        if visual:
-            print(f'\nThird iteration completed in {datetime.now() - stop}.')
-            stop = datetime.now()
-            print(f'Optimal solutions: {optimal} / {rosters}')
-            
-        self.data = pd.concat([self.data] + ROSTERS, axis='columns')
-        return total_optimal, total_rosters
         
     
     def _strategy_single(self, point_col):
@@ -810,14 +728,18 @@ class Game:
             # summary of selected
             sal = dat_select['Salary'].sum()
             proj = dat_select['Projected'].sum()
-            std = (dat_select['Actual_STD'] ** 2).sum() ** .5
+            avg = dat_select['Hist_Avg'].sum()
+            std = (dat_select['Hist_Std'] ** 2).sum() ** .5
+            per = dat_select['Proj_Percent'].sum()
             
             # k is distance from original (number of dropped players)
             k = self.data[self.data[rost] == -1].shape[0]
             
-            self.rosters.loc[rost] = [sal, round(proj, 1), round(std, 2), k]
+            self.rosters.loc[rost] = [
+                sal, round(proj, 1), round(avg, 2), round(std, 2), per, k]
         
         return True
+    
     
     def generateRosters(self, strategy, salary=None, min_pts=None, point_col='Projected',
                         drop_injuries=[], drop_players_initial=[],
@@ -883,7 +805,7 @@ class Game:
         k_players = ~dat['Nickname'].isin(self._drop_players)
         
         # keep players with enough historical information
-        k_std = ~dat['Actual_STD'].isna()
+        k_std = ~dat['Hist_Std'].isna()
         
         # master mask
         keep = k_def | (k_points & k_injuries & k_players & k_std)
@@ -929,12 +851,15 @@ class Game:
         """
         Select roster from generated rosters.
         """
+        # check if q_std is None
+        if not q_std:
+            q_std = 1.00
         self._q_points = q_points
         self._q_std = q_std
         
         top = self.rosters[
             (self.rosters['Projected'] >= self.rosters['Projected'].quantile(self._q_points)) &
-            (self.rosters['STD'] <= self.rosters['STD'].quantile(self._q_std))]
+            (self.rosters['Hist_Std'] <= self.rosters['Hist_Std'].quantile(self._q_std))]
         
         # count appearances
         self.data['Top Appearances'] = (
@@ -950,8 +875,76 @@ class Game:
         top_sorted = top.sort_values(['Score', 'K'], ascending=[False, True])
         self._selection = top_sorted.iloc[0].name
         
-        return top_sorted
+        # append columns to self.rosters
+        # top roster flag
+        self.rosters['Top'] = self.rosters.index.isin(top.index)
         
+        # score each roster with top appearances
+        self.rosters['Top Appearances'] = self.rosters.index.to_series().apply(
+            lambda x: self.data[self.data[x]==1]['Top Appearances'].sum())
+        
+        return top_sorted
+    
+    
+    # Rebuild Rosters, Rename Data, Export Game -------------------------------
+    # TODO clean up
+    
+    def rebuild_data(self):
+        
+        dat = self.data
+        
+        # rename columns
+        col_name_map = {
+            'Injury' : 'Injury Indicator',
+            'FPPG' : 'Projected',
+            'MrPeriod' : 'MR_Period',
+            'ROST' : 'Proj_Percent',
+            'AvgActual' : 'Hist_Avg',
+            'StdActual' : 'Hist_Std',
+            'Actual_AVG' : 'Hist_Avg',
+            'Actual_STD' : 'Hist_Std'
+        }
+        dat.columns = list(dat.columns.to_series().apply(lambda x: col_name_map.get(x, x)))
+        
+        # get historicals
+        self.historical = self.loadFantasyProsActuals()[0]
+        hist_sum = self.summarizeActuals()
+        
+        if 'Proj_Percent' not in dat.columns:
+            dat = dat.merge(
+                hist_sum['Proj_Percent'], how = 'left', left_on = 'Nickname', right_index=True)
+        
+        if 'N_Games' not in dat.columns:
+            dat = dat.merge(
+                hist_sum['N_Games'], how = 'left', left_on = 'Nickname', right_index=True)
+        
+        # organize columns and save 
+        attr_cols = ['Nickname', 'Position', 'Salary', 'Injury Indicator',
+                      'QB', 'RB', 'WR', 'TE', 'DST', 'FLEX', 'Projected',
+                      'MR_Period', 'N_Games', 'Hist_Avg', 'Hist_Std', 'Proj_Percent']
+        rost_cols = list(dat.columns[dat.columns.str.contains('Roster')])
+        self.data = dat[attr_cols + rost_cols]
+        
+        return True
+    
+    
+    def rebuild_rosters(self):
+        
+        # initialize
+        self.rosters = pd.DataFrame(
+            columns = ['Salary', 'Projected', 'Hist_Avg', 'Hist_Std', 'Proj_Percent', 'K'])
+        
+        self._summarize_rosters()
+        
+        return True
+        
+    
+    def rebuild_game(self):
+        
+        self.rebuild_data()
+        self.rebuild_rosters()
+        self.selectRosters(self._q_points, self._q_std)
+
         
     # PLOTTING FUNCTIONS ------------------------------------------------------
     
@@ -973,3 +966,8 @@ class Game:
     def graphRosters(self, points='projected', how='std'):
         # TODO
         pass
+    
+# TODO junk below here
+# test = Game('GAME NFL 2022-08 82292 Reimagined', sport='NFL')
+# test.rebuild_game()
+# test.export_game(override=True)
