@@ -93,22 +93,7 @@ class Game:
             self.actuals = actuals
             
             # merge actuals to data and rosters
-            self.data = self.data.merge(
-                self.actuals[['Nickname', 'FPTS']],
-                how = 'left', left_on = 'Nickname', right_on='Nickname')
-            # rename 'FPTS' to 'Actual'
-            self.data.columns = ['Actual' if i=='FPTS' else i for i in self.data.columns]
-            
-            # merge actual roster points to rosters dataframe
-            rosters = self.data[
-                self.data.columns[list(self.data.columns).index('Roster0') : -1]
-                ].replace(-1, 0)
-            points = self.data[self.data.columns[-1]]
-            r_points = rosters.multiply(points.fillna(0), axis='rows').sum(axis='rows')
-            try: # TODO clean up try/except
-                self.rosters['Actual'] = r_points
-            except:
-                print('Rosters not found for actual merge.')
+            self.mergeActuals()
             
             # initialize tracking dict
             self.tracking = {}
@@ -243,6 +228,27 @@ class Game:
         agg['Hist_Avg'] = round(agg['Hist_Avg'], 2)
         agg['Hist_Std'] = round(agg['Hist_Std'], 2)
         return agg
+    
+    
+    def mergeActuals(self):
+        """
+        Merge actual fantasy points into data.
+        """
+        # merge points onto data
+        self.data = self.data.merge(
+            self.actuals[['Nickname', 'FPTS']],
+            how = 'left', left_on = 'Nickname', right_on='Nickname')
+        # rename 'FPTS' to 'Actual'
+        self.data.rename(columns={'FPTS' : 'Actual'}, inplace=True)
+        
+        # merge actual roster points to rosters dataframe
+        rosters = self.data[
+            self.data.columns[list(self.data.columns).index('Roster0') : -1]
+            ].replace(-1, 0)
+        points = self.data['Actual']
+        r_points = rosters.multiply(points.fillna(0), axis='rows').sum(axis='rows')
+                    
+        self.rosters['Actual'] = r_points
     
     
     def import_game(self, file_name, sport):
@@ -413,6 +419,77 @@ class Game:
             data.to_pickle(save_folder + file_name)
         return True
     
+    
+    def FanDuelCSVExport(self, rosters, save_to_file=True, file_name=None):
+        """
+        Creates a dataframe in format of FanDuel's CSV import with player IDs.
+        Saves file by default.
+        
+        rosters : list of roster names to export
+        """
+        
+        if type(rosters) != list:
+            raise ValueError(f'Rosters is expected to be a list. Got {type(rosters)}.')
+        
+        folder = 'Lib/FanDuel CSV Imports/'
+        if not file_name:
+            file_name = f'FanDuel {self._sport} {self._game_id} upload file.csv'
+        
+        # merge IDs from players list
+        pl = pd.read_csv(f'Lib/Players Lists/{self._sport}/' + self._players_list)
+        dat = self.data.merge(pl[['Nickname', 'Id']],
+                              how = 'left', left_on = 'Nickname', right_on = 'Nickname')        
+        
+        # create dictionary
+        upload = {}
+        
+        if self._sport == 'NFL':
+            for roster in rosters:
+                ids = {}
+                temp = dat[dat[roster]==1]
+                
+                ids['QB'] = temp.loc[temp.Position == 'QB', 'Id'].iloc[0]
+                
+                rbs = temp.loc[temp.Position == 'RB', 'Id']
+                ids['RB1'] = rbs.iloc[0]
+                ids['RB2'] = rbs.iloc[1]
+                if len(rbs) == 3:
+                    ids['FLEX'] = rbs.iloc[2]
+                    
+                wrs = temp.loc[temp.Position == 'WR', 'Id']
+                ids['WR1'] = wrs.iloc[0]
+                ids['WR2'] = wrs.iloc[1]
+                ids['WR3'] = wrs.iloc[2]
+                if len(wrs) == 4:
+                    ids['FLEX'] = wrs.iloc[3]
+                    
+                tes = temp.loc[temp.Position == 'TE', 'Id']
+                ids['TE'] = tes.iloc[0]
+                if len(tes) == 2:
+                    ids['FLEX'] = tes.iloc[1]
+                    
+                ids['DEF'] = temp.loc[temp.Position == 'D', 'Id'].iloc[0]
+                
+                upload[roster] = ids
+        
+        else:
+            raise NotImplementedError(f'FanDuelExportCSV not yet implemented for {self._sport}')
+            
+        # conver to dataframe
+        df = pd.DataFrame(upload).T
+        
+        # reorder and rename columns to match FanDuel
+        if self._sport == 'NFL':
+            df = df[['QB', 'RB1', 'RB2', 'WR1', 'WR2', 'WR3', 'TE', 'FLEX', 'DEF']]
+            df.columns = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DEF']
+        
+        # save to file
+        if save_to_file:
+            print(f'Saving file {folder + file_name}')
+            df.to_csv(folder + file_name, index=False)
+            
+        return df
+        
     
     # ROSTER FUNCTIONS --------------------------------------------------------
     
