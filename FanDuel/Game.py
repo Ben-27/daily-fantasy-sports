@@ -520,7 +520,7 @@ class Game:
     
     
     def _defineProblem(self, dat, point_col='Projected', drop_players=[],
-                       variance_type=None, variance_target=None):
+                       variance_type=None, variance_target=None, max_te=2):
             """
             Breaks dat into components for integer programming problem.
             Returns LpProblem
@@ -556,7 +556,7 @@ class Game:
                 problem += pulp.lpSum(players * A.iloc[2]) >= 3, 'WR Min Contraint'
                 problem += pulp.lpSum(players * A.iloc[2]) <= 4, 'WR Max Contraint'
                 problem += pulp.lpSum(players * A.iloc[3]) >= 1, 'TE Min Contraint'
-                problem += pulp.lpSum(players * A.iloc[3]) <= 2, 'TE Max Contraint'
+                problem += pulp.lpSum(players * A.iloc[3]) <= max_te, 'TE Max Contraint'
                 problem += pulp.lpSum(players * A.iloc[4]) == 1, 'DST Contraint'
                 problem += pulp.lpSum(players * A.iloc[5]) == 7, 'FLEX Contraint'
                 problem += pulp.lpSum(players * A.iloc[6]) <= self._salary_limit, 'Salary Contraint'
@@ -569,7 +569,7 @@ class Game:
             return False
        
         
-    def _solveProblem(self, point_col, roster_name='Roster0', drop_players=[]):
+    def _solveProblem(self, point_col, roster_name='Roster0', drop_players=[], max_te=2):
         """
         Creates and solves LpProblem from data and appends the roster to the dataframe.
     
@@ -577,7 +577,7 @@ class Game:
         
         Returns: solution status
         """
-        problem = self._defineProblem(self.data, point_col, drop_players)
+        problem = self._defineProblem(self.data, point_col, drop_players, max_te=max_te)
         problem.solve()
         
         vars_dict = problem.variablesDict()
@@ -715,7 +715,7 @@ class Game:
         return total_optimal, total_rosters
     
     
-    def _strategy_reimagined(self, point_col, visual=True):
+    def _strategy_reimagined(self, point_col, visual=True, max_te=2):
         """
         Finds a neighborhood of optimal solutions by dropping players in optimal
         roster and then optimal plus one optimal player at a time for a total
@@ -731,7 +731,7 @@ class Game:
         total_rosters = 0
         
         # initial problem
-        result = self._solveProblem(point_col)
+        result = self._solveProblem(point_col, max_te=max_te)
         init_sol_players = list(self.data[self.data['Roster0']==1]['Nickname'])
         
         if result != 'Optimal':
@@ -748,7 +748,7 @@ class Game:
         optimal = 0
         rosters = 0
         for s in pset:
-            result = self._solveProblem(point_col, f'Roster{counter}', s)
+            result = self._solveProblem(point_col, f'Roster{counter}', s, max_te=max_te)
             if result == 'Optimal':
                 optimal += 1
             rosters += 1
@@ -776,7 +776,8 @@ class Game:
             rosters = 0
             for s in alt_pset:
                 result = self._solveProblem(point_col, f'Roster{counter}',
-                                            tuple(already_dropped) + s)
+                                            tuple(already_dropped) + s,
+                                            max_te=max_te)
                 if result == 'Optimal':
                     optimal += 1
                 rosters += 1
@@ -820,7 +821,7 @@ class Game:
     
     def generateRosters(self, strategy, salary=None, min_pts=None, point_col='Projected',
                         drop_injuries=[], drop_players_initial=[],
-                        visual = True):
+                        visual = True, max_te = 2):
         """
         Generates rosters by using the given strategy.
         
@@ -903,7 +904,7 @@ class Game:
             results = self._strategy_iterative(point_col, visual)
             
         if strategy == 'reimagined':
-            results = self._strategy_reimagined(point_col, visual)
+            results = self._strategy_reimagined(point_col, visual, max_te=max_te)
         
         stop_strategy = datetime.now()
         
@@ -1043,8 +1044,3 @@ class Game:
     def graphRosters(self, points='projected', how='std'):
         # TODO
         pass
-    
-# TODO junk below here
-# test = Game('GAME NFL 2022-08 82292 Reimagined', sport='NFL')
-# test.rebuild_game()
-# test.export_game(override=True)
